@@ -1,0 +1,41 @@
+---
+# Workflow node 4: follow the migration until it finishes.
+#
+# Polls the Migration object and prints per-VM pipeline progress on every
+# iteration, so the AAP job output doubles as a live migration dashboard.
+- name: Monitor the migration wave
+  hosts: localhost
+  gather_facts: false
+  vars:
+    plan_name: wave-01
+    plan_namespace: openshift-mtv
+    poll_interval: 30            # seconds
+    max_polls: 240               # 240 x 30s = 2 hours
+
+  tasks:
+    - name: Require a migration name (set by the start step)
+      ansible.builtin.assert:
+        that: migration_name is defined and migration_name | length > 0
+        fail_msg: migration_name was not provided - run this from the workflow or pass it as an extra var
+
+    - name: Poll until the migration finishes
+      ansible.builtin.include_tasks: tasks/poll-migration.yml
+      loop: "{{ range(1, max_polls | int + 1) | list }}"
+      loop_control:
+        loop_var: poll
+        label: "poll {{ poll }}"
+      when: not (migration_finished | default(false))
+
+    - name: Fail if the migration did not finish in time
+      ansible.builtin.fail:
+        msg: "Migration {{ migration_name }} did not finish within {{ (poll_interval | int * max_polls | int / 60) | int }} minutes"
+      when: not (migration_finished | default(false))
+
+    - name: Fail if the migration did not succeed
+      ansible.builtin.fail:
+        msg: "Migration {{ migration_name }} ended with {{ migration_result }}"
+      when: migration_result != 'Succeeded'
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Migration {{ migration_name }} succeeded"

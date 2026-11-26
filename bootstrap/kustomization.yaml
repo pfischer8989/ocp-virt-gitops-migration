@@ -1,0 +1,8 @@
+# Applied once by scripts/bootstrap.sh AFTER the GitOps operator is running.
+# (The operator itself lives in gitops-operator/ and is applied first.)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - argocd-rbac.yaml
+  - app-project.yaml
+  - root-app.yaml

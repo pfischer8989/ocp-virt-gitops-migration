@@ -1,0 +1,11 @@
+# Target namespace for wave-00-rehearsal. Never pruned by Argo CD: removing the wave from Git
+# must not delete the VMs that were migrated into it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vm-wave-00-rehearsal
+  labels:
+    migration-wave: wave-00-rehearsal
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false

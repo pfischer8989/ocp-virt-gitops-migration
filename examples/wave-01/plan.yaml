@@ -1,0 +1,32 @@
+# The migration wave. Merging this file does NOT start a migration — it makes
+# the plan exist and get validated by MTV. AAP starts it after approval.
+apiVersion: forklift.konveyor.io/v1beta1
+kind: Plan
+metadata:
+  name: wave-01
+  namespace: openshift-mtv
+  labels:
+    migration-wave: wave-01
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  description: "Wave 01 - 3-tier web app: database + first IIS web server"
+  warm: false
+  targetNamespace: vm-wave-01
+  provider:
+    source:
+      name: vmware
+      namespace: openshift-mtv
+    destination:
+      name: host
+      namespace: openshift-mtv
+  map:
+    network:
+      name: wave-01-network
+      namespace: openshift-mtv
+    storage:
+      name: wave-01-storage
+      namespace: openshift-mtv
+  vms:
+    - name: database-user1
+    - name: winweb01-user1

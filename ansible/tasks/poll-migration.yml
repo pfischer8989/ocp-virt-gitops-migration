@@ -1,0 +1,40 @@
+---
+- name: Read migration status
+  kubernetes.core.k8s_info:
+    api_version: forklift.konveyor.io/v1beta1
+    kind: Migration
+    name: "{{ migration_name }}"
+    namespace: "{{ plan_namespace }}"
+  register: mig
+
+- name: Summarise progress
+  ansible.builtin.set_fact:
+    migration_result: "{{ terminal | map(attribute='type') | first | default('Running') }}"
+    migration_finished: "{{ terminal | length > 0 }}"
+    migration_progress: "{{ vm_lines }}"
+  vars:
+    status: "{{ (mig.resources | first | default({})).status | default({}) }}"
+    conditions: "{{ status.conditions | default([]) }}"
+    terminal: "{{ conditions | selectattr('type', 'in', ['Succeeded', 'Failed', 'Canceled']) | selectattr('status', 'equalto', 'True') | list }}"
+    vms: "{{ status.vms | default([]) }}"
+    vm_lines: >-
+      {%- set out = [] -%}
+      {%- for vm in vms -%}
+        {%- set running = vm.pipeline | default([]) | selectattr('phase', 'equalto', 'Running') | list -%}
+        {%- set step = running | first | default({}) -%}
+        {%- set pct = '' -%}
+        {%- if step.progress is defined and (step.progress.total | default(0)) > 0 -%}
+          {%- set pct = ' ' ~ ((step.progress.completed | default(0)) * 100 // step.progress.total) ~ '%' -%}
+        {%- endif -%}
+        {%- set _ = out.append(vm.name | default(vm.id) ~ ': ' ~ (vm.phase | default('Pending')) ~ ((' - ' ~ step.name ~ pct) if step.name is defined else '')) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Progress (poll {{ poll }})
+  ansible.builtin.debug:
+    msg: "{{ migration_progress if migration_progress | length > 0 else ['waiting for MTV to start the migration'] }}"
+
+- name: Wait before the next poll
+  ansible.builtin.pause:
+    seconds: "{{ poll_interval | int }}"
+  when: not (migration_finished | bool)

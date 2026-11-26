@@ -1,0 +1,5 @@
+---
+# Installed by AAP on project sync.
+collections:
+  - name: kubernetes.core
+  - name: vmware.vmware_rest

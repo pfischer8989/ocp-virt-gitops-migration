@@ -1,0 +1,27 @@
+# Part 3 — migrated VMs adopted into Git (vms/<namespace>/<vm>.yaml).
+# selfHeal reverts manual drift (e.g. a CPU change made in the console).
+# Each VM carries Prune=false,Delete=false so removing a file or deleting this
+# Application can never delete a running VM.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vm-lifecycle
+  namespace: openshift-gitops
+spec:
+  project: vm-migration
+  source:
+    repoURL: https://github.com/pfischer8989/ocp-virt-gitops-migration.git
+    targetRevision: main
+    path: vms
+    directory:
+      recurse: true
+      include: '{*.yaml,*.yml}'
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+      allowEmpty: true
+    syncOptions:
+      - ServerSideApply=true

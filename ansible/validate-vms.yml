@@ -1,0 +1,132 @@
+---
+# Workflow node 5: post-migration health validation.
+#
+# Cold-migrated VMs land powered off (they mirror the source power state), so
+# this step starts them first, then checks each one:
+#   - VirtualMachineInstance is Running and Ready
+#   - guest agent connected (reported; Windows guests without the agent only warn)
+#   - optional: application URL answers HTTP 200
+- name: Validate migrated VMs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    plan_name: wave-01
+    plan_namespace: openshift-mtv
+    start_vms: true
+    vm_ready_timeout: 600        # seconds per VM
+    app_url: ""                  # e.g. https://route-webapp-vmimported.apps.<cluster>/
+    # Override both to validate a different set of VMs (e.g. the pre-staged
+    # vmimported VMs while a live migration is still copying disks).
+    validate_namespace: ""
+    validate_vms: []
+
+  tasks:
+    - name: Resolve which VMs to validate from the plan
+      when: validate_vms | length == 0 or validate_namespace | length == 0
+      block:
+        - name: Read plan
+          kubernetes.core.k8s_info:
+            api_version: forklift.konveyor.io/v1beta1
+            kind: Plan
+            name: "{{ plan_name }}"
+            namespace: "{{ plan_namespace }}"
+          register: plan_info
+
+        - name: Set targets
+          ansible.builtin.set_fact:
+            validate_namespace: "{{ validate_namespace if validate_namespace | length > 0 else plan_info.resources[0].spec.targetNamespace }}"
+            # MTV names target VMs after the source VM, DNS-1123 sanitised.
+            validate_vms: >-
+              {{ validate_vms if validate_vms | length > 0 else
+                 plan_info.resources[0].spec.vms | map(attribute='name') | map('lower') | map('regex_replace', '[^a-z0-9-]', '-') | list }}
+
+    - name: Read VirtualMachines
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ item }}"
+        namespace: "{{ validate_namespace }}"
+      loop: "{{ validate_vms }}"
+      register: vm_objs
+
+    - name: Every VM must exist
+      ansible.builtin.assert:
+        that: item.resources | length > 0
+        fail_msg: "VirtualMachine {{ validate_namespace }}/{{ item.item }} not found"
+        quiet: true
+      loop: "{{ vm_objs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Start VMs that are stopped
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ item.item }}"
+        namespace: "{{ validate_namespace }}"
+        state: patched
+        merge_type: merge
+        # A VM uses either spec.running (older) or spec.runStrategy, never both.
+        definition: >-
+          {{ {'spec': {'running': true}} if (item.resources[0].spec.running is defined)
+             else {'spec': {'runStrategy': 'Always'}} }}
+      loop: "{{ vm_objs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - start_vms | bool
+        - not (item.resources[0].spec.running | default(false) | bool)
+        - item.resources[0].spec.runStrategy | default('Halted') not in ['Always', 'RerunOnFailure']
+
+    - name: Wait for each VM to be Running and Ready
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        name: "{{ item }}"
+        namespace: "{{ validate_namespace }}"
+      register: vmis
+      until: >-
+        vmis.resources | length > 0 and
+        vmis.resources[0].status.phase | default('') == 'Running' and
+        (vmis.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0)
+      retries: "{{ (vm_ready_timeout | int / 10) | int }}"
+      delay: 10
+      loop: "{{ validate_vms }}"
+
+    - name: Build health report
+      ansible.builtin.set_fact:
+        health_report: "{{ health_report | default([]) + [line] }}"
+      vars:
+        vmi: "{{ item.resources[0] }}"
+        agent: "{{ vmi.status.conditions | default([]) | selectattr('type', 'equalto', 'AgentConnected') | selectattr('status', 'equalto', 'True') | list | length > 0 }}"
+        ip: "{{ (vmi.status.interfaces | default([]) | first | default({})).ipAddress | default('no IP yet') }}"
+        line: >-
+          {{ item.item }}: Running/Ready on {{ vmi.status.nodeName }}, IP {{ ip }},
+          guest agent {{ 'connected' if agent else 'NOT connected (expected for Windows without the agent)' }},
+          {{ vmi.spec.domain.cpu.sockets | default(1) * vmi.spec.domain.cpu.cores | default(1) }} vCPU,
+          {{ vmi.spec.domain.memory.guest | default(vmi.spec.domain.resources.requests.memory | default('?')) }} memory
+      loop: "{{ vmis.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Check the application URL
+      ansible.builtin.uri:
+        url: "{{ app_url }}"
+        validate_certs: false
+        status_code: 200
+        return_content: false
+      register: app_check
+      retries: 12
+      delay: 10
+      until: app_check.status == 200
+      when: app_url | length > 0
+
+    - name: Health report
+      ansible.builtin.debug:
+        msg: "{{ health_report + ([('Application ' ~ app_url ~ ' -> HTTP ' ~ app_check.status)] if app_url | length > 0 else []) }}"
+
+    - name: Publish results
+      ansible.builtin.set_stats:
+        data:
+          validated_namespace: "{{ validate_namespace }}"
+          validated_vms: "{{ validate_vms }}"

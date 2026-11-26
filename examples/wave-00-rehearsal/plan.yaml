@@ -1,0 +1,31 @@
+# The migration wave. Merging this file does NOT start a migration — it makes
+# the plan exist and get validated by MTV. AAP starts it after approval.
+apiVersion: forklift.konveyor.io/v1beta1
+kind: Plan
+metadata:
+  name: wave-00-rehearsal
+  namespace: openshift-mtv
+  labels:
+    migration-wave: wave-00-rehearsal
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  description: "Rehearsal wave - HAProxy VM (not needed on OpenShift, safe to burn)"
+  warm: false
+  targetNamespace: vm-wave-00-rehearsal
+  provider:
+    source:
+      name: vmware
+      namespace: openshift-mtv
+    destination:
+      name: host
+      namespace: openshift-mtv
+  map:
+    network:
+      name: wave-00-rehearsal-network
+      namespace: openshift-mtv
+    storage:
+      name: wave-00-rehearsal-storage
+      namespace: openshift-mtv
+  vms:
+    - name: haproxy-user1

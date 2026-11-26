@@ -1,0 +1,11 @@
+# Local configuration (may contain tokens / passwords) — never commit.
+config.env
+
+# Real repo credentials for Argo CD — only the .example belongs in git.
+bootstrap/repo-secret.yaml
+
+# Scratch output from scripts.
+.tmp/
+
+# Per-user Claude Code settings.
+.claude/settings.local.json

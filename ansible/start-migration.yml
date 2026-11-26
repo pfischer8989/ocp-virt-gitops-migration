@@ -1,0 +1,44 @@
+---
+# Workflow node 3 (runs after the approval node): start the approved wave.
+#
+# This is the ONLY place a forklift Migration object is created. Git/Argo CD
+# owns the Plan (what to migrate); AAP owns execution (when, and who approved).
+- name: Start the approved migration wave
+  hosts: localhost
+  gather_facts: false
+  vars:
+    plan_name: wave-01
+    plan_namespace: openshift-mtv
+    migration_name: "{{ plan_name }}-{{ now(utc=true, fmt='%Y%m%d-%H%M%S') }}"
+
+  tasks:
+    - name: Create the MTV Migration for plan {{ plan_name }}
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: Migration
+          metadata:
+            name: "{{ migration_name }}"
+            namespace: "{{ plan_namespace }}"
+            labels:
+              migration-wave: "{{ plan_name }}"
+              app.kubernetes.io/managed-by: ansible-automation-platform
+            annotations:
+              aap/workflow-job-id: "{{ tower_workflow_job_id | default('') | string }}"
+              aap/job-id: "{{ tower_job_id | default('') | string }}"
+              aap/launched-by: "{{ tower_user_name | default('') }}"
+              gitops/revision: "{{ git_revision | default('') }}"
+          spec:
+            plan:
+              name: "{{ plan_name }}"
+              namespace: "{{ plan_namespace }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Migration {{ plan_namespace }}/{{ migration_name }} started for wave {{ plan_name }}"
+
+    - name: Hand the migration name to the monitor step
+      ansible.builtin.set_stats:
+        data:
+          migration_name: "{{ migration_name }}"

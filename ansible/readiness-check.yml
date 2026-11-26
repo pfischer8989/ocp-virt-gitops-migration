@@ -1,0 +1,161 @@
+---
+# Workflow node 1: readiness checks for a migration wave.
+#
+# Collects every failed check and only then fails, so the operator sees the
+# whole list in one pass rather than fixing problems one at a time.
+#
+# Credentials (AAP): "kubeconfig" (OpenShift) + "VMware Credentials" (vCenter).
+- name: Migration wave readiness checks
+  hosts: localhost
+  gather_facts: false
+  vars:
+    plan_name: wave-01
+    plan_namespace: openshift-mtv
+    gitops_namespace: openshift-gitops
+    gitops_application: migration-waves
+    check_vsphere_power_state: true
+    readiness_failures: []
+    readiness_passed: []
+
+  tasks:
+    # ---------------------------------------------------------------- GitOps
+    - name: "Check 1 - Argo CD has synced the approved wave from Git"
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: "{{ gitops_application }}"
+        namespace: "{{ gitops_namespace }}"
+      register: argo_app
+
+    - name: Evaluate Argo CD sync state
+      ansible.builtin.set_fact:
+        readiness_failures: "{{ readiness_failures + [msg] if not ok else readiness_failures }}"
+        readiness_passed: "{{ readiness_passed + [msg] if ok else readiness_passed }}"
+      vars:
+        app: "{{ argo_app.resources | first | default({}) }}"
+        ok: "{{ (app.status.sync.status | default('')) == 'Synced' }}"
+        msg: >-
+          Argo CD application '{{ gitops_application }}' is
+          {{ app.status.sync.status | default('MISSING') }}
+          at Git revision {{ (app.status.sync.revision | default('n/a'))[:8] }}
+
+    # ---------------------------------------------------------------- MTV plan
+    - name: "Check 2 - MTV plan exists"
+      kubernetes.core.k8s_info:
+        api_version: forklift.konveyor.io/v1beta1
+        kind: Plan
+        name: "{{ plan_name }}"
+        namespace: "{{ plan_namespace }}"
+      register: plan_info
+
+    - name: Stop here if the plan is not on the cluster
+      ansible.builtin.fail:
+        msg: >-
+          Plan {{ plan_namespace }}/{{ plan_name }} not found. Has the migration
+          wave PR been merged and synced by Argo CD?
+      when: plan_info.resources | length == 0
+
+    - name: Read plan state
+      ansible.builtin.set_fact:
+        plan: "{{ plan_info.resources[0] }}"
+        plan_conditions: "{{ plan_info.resources[0].status.conditions | default([]) }}"
+        plan_vm_names: "{{ plan_info.resources[0].spec.vms | map(attribute='name') | list }}"
+
+    - name: "Check 3 - MTV has validated the plan (Ready, no blocking conditions)"
+      ansible.builtin.set_fact:
+        readiness_failures: "{{ readiness_failures + failures }}"
+        readiness_passed: "{{ readiness_passed + (['MTV plan ' ~ plan_name ~ ' is Ready (' ~ plan_vm_names | length ~ ' VMs: ' ~ plan_vm_names | join(', ') ~ ')'] if not failures else []) }}"
+      vars:
+        ready: "{{ plan_conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0 }}"
+        blocking: "{{ plan_conditions | selectattr('category', 'in', ['Critical', 'Error']) | selectattr('status', 'equalto', 'True') | list }}"
+        failures: >-
+          {{ (['MTV plan ' ~ plan_name ~ ' is not Ready yet'] if not ready else [])
+             + (blocking | map(attribute='message') | map('regex_replace', '^', 'MTV: ') | list) }}
+
+    - name: "Check 4 - wave has not already been migrated"
+      ansible.builtin.set_fact:
+        readiness_failures: "{{ readiness_failures + ([msg] if done else []) }}"
+        readiness_passed: "{{ readiness_passed + (['Wave ' ~ plan_name ~ ' has not been executed before'] if not done else []) }}"
+      vars:
+        done: "{{ plan_conditions | selectattr('type', 'in', ['Succeeded', 'Executing']) | selectattr('status', 'equalto', 'True') | list | length > 0 }}"
+        msg: "Wave {{ plan_name }} is already executing or has succeeded - a VM can only be migrated once"
+
+    # ---------------------------------------------------------------- Target
+    - name: "Check 5 - target namespace exists"
+      kubernetes.core.k8s_info:
+        kind: Namespace
+        name: "{{ plan.spec.targetNamespace }}"
+      register: target_ns
+
+    - name: Evaluate target namespace
+      ansible.builtin.set_fact:
+        readiness_failures: "{{ readiness_failures + ([msg ~ ' is missing'] if not ok else []) }}"
+        readiness_passed: "{{ readiness_passed + ([msg ~ ' exists'] if ok else []) }}"
+      vars:
+        ok: "{{ target_ns.resources | length > 0 }}"
+        msg: "Target namespace {{ plan.spec.targetNamespace }}"
+
+    - name: "Check 6 - target storage classes exist"
+      kubernetes.core.k8s_info:
+        api_version: forklift.konveyor.io/v1beta1
+        kind: StorageMap
+        name: "{{ plan.spec.map.storage.name }}"
+        namespace: "{{ plan.spec.map.storage.namespace | default(plan_namespace) }}"
+      register: storage_map
+
+    - name: Look up storage classes
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ item }}"
+      loop: "{{ (storage_map.resources | first | default({})).spec.map | default([]) | map(attribute='destination.storageClass') | list | unique }}"
+      register: storage_classes
+
+    - name: Evaluate storage classes
+      ansible.builtin.set_fact:
+        readiness_failures: "{{ readiness_failures + (['StorageClass ' ~ item.item ~ ' is missing'] if item.resources | length == 0 else []) }}"
+        readiness_passed: "{{ readiness_passed + (['StorageClass ' ~ item.item ~ ' is available'] if item.resources | length > 0 else []) }}"
+      loop: "{{ storage_classes.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ---------------------------------------------------------------- vSphere
+    # Policy check: cold migration shuts the source VM down. Change management
+    # requires app owners to power VMs off themselves before the window.
+    - name: "Check 7 - source VMs are powered off in vSphere"
+      when: check_vsphere_power_state | bool
+      block:
+        - name: Query vCenter
+          vmware.vmware_rest.vcenter_vm_info:
+            names: "{{ plan_vm_names }}"
+            vcenter_validate_certs: false
+          register: vsphere_vms
+
+        - name: Evaluate power state
+          ansible.builtin.set_fact:
+            readiness_failures: "{{ readiness_failures + powered_on_msgs + missing_msgs }}"
+            readiness_passed: "{{ readiness_passed + (['All source VMs are powered off in vSphere'] if not (powered_on_msgs + missing_msgs) else []) }}"
+          vars:
+            found: "{{ vsphere_vms.value | map(attribute='name') | list }}"
+            powered_on: "{{ vsphere_vms.value | rejectattr('power_state', 'equalto', 'POWERED_OFF') | map(attribute='name') | list }}"
+            powered_on_msgs: "{{ powered_on | map('regex_replace', '^(.*)$', 'vSphere VM \\1 is POWERED ON - the app owner must shut it down before the migration window') | list }}"
+            missing_msgs: "{{ plan_vm_names | difference(found) | map('regex_replace', '^(.*)$', 'vSphere VM \\1 not found in vCenter') | list }}"
+
+    # ---------------------------------------------------------------- Report
+    - name: Readiness report
+      ansible.builtin.debug:
+        msg: "{{ (readiness_passed | map('regex_replace', '^', 'PASS  ') | list) + (readiness_failures | map('regex_replace', '^', 'FAIL  ') | list) }}"
+
+    - name: Publish results to the workflow
+      ansible.builtin.set_stats:
+        data:
+          plan_name: "{{ plan_name }}"
+          plan_namespace: "{{ plan_namespace }}"
+          target_namespace: "{{ plan.spec.targetNamespace }}"
+          plan_vm_names: "{{ plan_vm_names }}"
+          git_revision: "{{ (argo_app.resources | first | default({})).status.sync.revision | default('') }}"
+
+    - name: Block the migration if any check failed
+      ansible.builtin.fail:
+        msg: "{{ ['Wave ' ~ plan_name ~ ' is NOT ready for migration:'] + readiness_failures }}"
+      when: readiness_failures | length > 0

@@ -1,0 +1,31 @@
+# Part 1 — every file merged under migration-waves/ (one sub-directory per wave)
+# is synced to the cluster: target Namespace, NetworkMap, StorageMap, Plan.
+#
+# Git never contains a forklift Migration object. A Plan only *describes* a
+# migration; AAP creates the Migration object after readiness checks and human
+# approval (Part 2). Argo CD owns "what", AAP owns "when".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: migration-waves
+  namespace: openshift-gitops
+spec:
+  project: vm-migration
+  source:
+    repoURL: https://github.com/pfischer8989/ocp-virt-gitops-migration.git
+    targetRevision: main
+    path: migration-waves
+    directory:
+      recurse: true
+      include: '{*.yaml,*.yml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-mtv
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: true
+    syncOptions:
+      # MTV writes defaults/ids into Plan specs; SSA keeps Argo from fighting it.
+      - ServerSideApply=true
