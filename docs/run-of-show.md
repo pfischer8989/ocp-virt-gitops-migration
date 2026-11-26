@@ -14,7 +14,7 @@ Format follows the lab guide: **DO** is what you click or run, **SAY** is the ta
 
 ## Pre-stage checklist (30 min before)
 
-- [ ] `oc -n openshift-gitops get applications`: all three apps are **Synced / Healthy**.
+- [ ] `oc -n openshift-gitops get applications.argoproj.io`: all three apps are **Synced / Healthy**.
 - [ ] `migration-waves/` and `vms/` on `main` are empty (run `scripts/reset.sh` otherwise).
 - [ ] `oc get vm -n vmimported`: `database`, `winweb01` and `winweb02` are Running. `database` has **1** CPU socket.
 - [ ] `route-webapp` in `vmimported` loads, and the URL is copied for the AAP survey.
@@ -197,7 +197,7 @@ The business outcomes:
 
 | Symptom | Fix |
 |---|---|
-| Argo app OutOfSync, nothing appears after merge | Argo polls every ~3 min. Click **Refresh** on the app, or `oc -n openshift-gitops annotate application migration-waves argocd.argoproj.io/refresh=hard --overwrite` |
+| Argo app OutOfSync, nothing appears after merge | Argo polls every ~3 min. Click **Refresh** on the app, or `oc -n openshift-gitops annotate applications.argoproj.io migration-waves argocd.argoproj.io/refresh=hard --overwrite` |
 | Plan stuck Progressing in Argo | Look at the Plan's conditions in the OpenShift console (Migration → Plans → wave-01 → conditions). The VDDK image validation can take a few minutes. |
 | Readiness check 7 errors connecting to vCenter | Check the AAP credential **VMware Credentials** (host, user1). As a last resort, launch with extra var `check_vsphere_power_state: false`. |
 | "Wave has already been migrated" | Each vSphere VM migrates once per lab. Use `wave-00-rehearsal`, or `scripts/reset.sh --vms`. |

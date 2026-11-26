@@ -74,7 +74,7 @@ scripts/setup-aap.sh                  # AAP project, templates, approval workflo
 Then check:
 
 ```sh
-oc -n openshift-gitops get applications       # vm-migration-root, migration-waves, vm-lifecycle: Synced/Healthy
+oc -n openshift-gitops get applications.argoproj.io       # vm-migration-root, migration-waves, vm-lifecycle: Synced/Healthy
 ```
 
 In AAP, go to **Templates → "VM Migration Wave - Readiness, Approval, Migrate"**.

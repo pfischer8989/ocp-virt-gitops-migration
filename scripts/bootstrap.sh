@@ -77,10 +77,10 @@ fi
 info "Applying AppProject, RBAC and the root app-of-apps"
 oc apply -k "$REPO_ROOT/bootstrap"
 wait_for "child applications created" 300 \
-  bash -c "oc get application migration-waves vm-lifecycle -n $GITOPS_NAMESPACE"
+  bash -c "oc get applications.argoproj.io migration-waves vm-lifecycle -n $GITOPS_NAMESPACE"
 
 echo
-oc get applications -n "$GITOPS_NAMESPACE"
+oc get applications.argoproj.io -n "$GITOPS_NAMESPACE"
 echo
 ok "Argo CD UI: https://$(oc get route openshift-gitops-server -n "$GITOPS_NAMESPACE" -o jsonpath='{.spec.host}')"
 echo "   Log in with OpenShift credentials (admin)."
